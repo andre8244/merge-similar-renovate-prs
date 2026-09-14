@@ -195,9 +195,7 @@ check_status() {
 
 # ---------------------------------------------------------------- open PRs ---
 merge_urls=()
-merge_labels=()
 auto_urls=()
-auto_labels=()
 skipped=0
 index=0
 
@@ -230,10 +228,8 @@ else
 
         if [[ "$ready" -eq 1 ]]; then
             merge_urls+=("$url")
-            merge_labels+=("${repo}#${number}")
         elif [[ "$AUTO_PENDING" -eq 1 && "$label" == "PENDING" ]]; then
             auto_urls+=("$url")
-            auto_labels+=("${repo}#${number}")
         else
             skipped=$((skipped + 1))
         fi
@@ -300,10 +296,8 @@ fi
 echo
 merged=0
 failed=0
-for i in "${!merge_urls[@]}"; do
-    url="${merge_urls[$i]}"
-    label="${merge_labels[$i]}"
-    printf '  Merging %-34s %s ... ' "$label" "$url"
+for url in "${merge_urls[@]}"; do
+    printf '  Merging %-60s ... ' "$url"
     if output=$(gh pr merge "$url" --squash --delete-branch 2>&1); then
         echo "${C_GREEN}done${C_RESET}"
         merged=$((merged + 1))
@@ -315,10 +309,8 @@ for i in "${!merge_urls[@]}"; do
 done
 
 queued=0
-for i in "${!auto_urls[@]}"; do
-    url="${auto_urls[$i]}"
-    label="${auto_labels[$i]}"
-    printf '  Auto-merge %-34s %s ... ' "$label" "$url"
+for url in "${auto_urls[@]}"; do
+    printf '  Auto-merge %-60s ... ' "$url"
     if output=$(gh pr merge "$url" --auto --squash --delete-branch 2>&1); then
         echo "${C_GREEN}queued${C_RESET}"
         queued=$((queued + 1))

@@ -67,8 +67,8 @@ Summary: 4 matching pull request(s) - 3 open, 1 closed/merged
 
 Merge the 2 pull request(s) marked PASSING with --squash? [yes/N] yes
 
-  Merging NethServer/ns8-lamp#138             ... done
-  Merging NethServer/ns8-rustfs#82            ... done
+  Merging https://github.com/NethServer/ns8-lamp/pull/138      ... done
+  Merging https://github.com/NethServer/ns8-rustfs/pull/82     ... done
 
 Merged 2 / 2, failed 0
 ```
