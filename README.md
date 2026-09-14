@@ -1,0 +1,1 @@
+# merge-similar-renovate-prs
