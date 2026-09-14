@@ -27,6 +27,7 @@ are ready, after a single confirmation.
 | `-l, --limit N` | maximum number of search results to fetch (default: 100) |
 | `-y, --yes` | do not ask for confirmation before merging |
 | `-n, --dry-run` | only list the pull requests, never merge |
+| `-a, --auto` | also enable GitHub auto-merge on pull requests whose checks are still running |
 | `-h, --help` | show the help text |
 
 The title must match the pull request title **exactly** (case-insensitive);
@@ -89,7 +90,29 @@ Everything else is listed for information but never merged:
 | `! CONFLICT` | the branch conflicts with its base |
 | `* DRAFT` | the pull request is a draft |
 
-Auto-merge (`--auto`) and administrator overrides (`--admin`) are never used:
-if a pull request is not mergeable right now, the script leaves it alone.
+Administrator overrides (`--admin`) are never used: branch protection is always
+respected.
+
+### Auto-merge (`--auto`)
+
+By default, pull requests whose checks are still running are listed and left
+alone. With `-a, --auto` they are additionally queued with
+`gh pr merge --auto --squash --delete-branch`: GitHub merges each of them by
+itself once every required check passes, and silently leaves it open if a check
+fails.
+
+Worth knowing before using it:
+
+- the repository must have **Allow auto-merge** enabled in its settings, and the
+  base branch needs required status checks - otherwise GitHub refuses to enable
+  auto-merge and the pull request is reported as failed;
+- the merge then happens **unattended**, possibly hours later, with nobody
+  watching the result;
+- only *required* checks gate the merge; a failing check that is not required
+  does not stop it;
+- the script exits as soon as auto-merge is enabled, so its summary says what
+  was queued, not what was eventually merged;
+- pull requests with failing checks, conflicts or draft state are still never
+  queued.
 
 The exit code is `1` if any merge failed, `0` otherwise.

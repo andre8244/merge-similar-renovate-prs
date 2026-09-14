@@ -13,6 +13,7 @@ OWNERS=(NethServer nethesis)
 LIMIT=100
 ASSUME_YES=0
 DRY_RUN=0
+AUTO_PENDING=0
 TITLE=""
 
 usage() {
@@ -27,10 +28,14 @@ Options:
   -l, --limit N    maximum number of search results to fetch (default: 100)
   -y, --yes        do not ask for confirmation before merging
   -n, --dry-run    only list the pull requests, never merge
+  -a, --auto       additionally enable GitHub auto-merge on pull requests whose
+                   checks are still running: GitHub merges them later, on its
+                   own, but only if every check ends up passing
   -h, --help       show this help
 
-Pull requests with pending, failing or missing checks, draft pull requests and
-pull requests with conflicts are listed but never merged.
+Pull requests with failing or missing checks, draft pull requests and pull
+requests with conflicts are never merged. Pull requests with pending checks are
+only touched with --auto.
 EOF
 }
 
@@ -53,6 +58,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -n|--dry-run)
             DRY_RUN=1
+            shift
+            ;;
+        -a|--auto)
+            AUTO_PENDING=1
             shift
             ;;
         -h|--help)
@@ -187,6 +196,8 @@ check_status() {
 # ---------------------------------------------------------------- open PRs ---
 merge_urls=()
 merge_labels=()
+auto_urls=()
+auto_labels=()
 skipped=0
 index=0
 
@@ -220,6 +231,9 @@ else
         if [[ "$ready" -eq 1 ]]; then
             merge_urls+=("$url")
             merge_labels+=("${repo}#${number}")
+        elif [[ "$AUTO_PENDING" -eq 1 && "$label" == "PENDING" ]]; then
+            auto_urls+=("$url")
+            auto_labels+=("${repo}#${number}")
         else
             skipped=$((skipped + 1))
         fi
@@ -244,6 +258,9 @@ fi
 echo
 echo "${C_BOLD}Summary:${C_RESET} $total matching pull request(s) - $open_count open, $closed_count closed/merged"
 echo "         ${#merge_urls[@]} ready to merge, $skipped open skipped (draft, conflicting, or checks not passing)"
+if [[ "$AUTO_PENDING" -eq 1 ]]; then
+    echo "         ${#auto_urls[@]} with pending checks, queued for auto-merge"
+fi
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
     echo
@@ -251,7 +268,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     exit 0
 fi
 
-if [[ "${#merge_urls[@]}" -eq 0 ]]; then
+if [[ "${#merge_urls[@]}" -eq 0 && "${#auto_urls[@]}" -eq 0 ]]; then
     echo
     echo "No pull request is ready to merge. Nothing to do."
     exit 0
@@ -260,7 +277,12 @@ fi
 # ------------------------------------------------------------- confirmation ---
 if [[ "$ASSUME_YES" -eq 0 ]]; then
     echo
-    printf 'Merge the %d pull request(s) marked PASSING with --squash? [yes/N] ' "${#merge_urls[@]}"
+    if [[ "${#auto_urls[@]}" -gt 0 ]]; then
+        printf 'Merge the %d pull request(s) marked PASSING and enable auto-merge on %d PENDING one(s)? [yes/N] ' \
+            "${#merge_urls[@]}" "${#auto_urls[@]}"
+    else
+        printf 'Merge the %d pull request(s) marked PASSING with --squash? [yes/N] ' "${#merge_urls[@]}"
+    fi
     answer=""
     if { exec 3</dev/tty; } 2>/dev/null; then
         read -r answer <&3 || true
@@ -281,7 +303,7 @@ failed=0
 for i in "${!merge_urls[@]}"; do
     url="${merge_urls[$i]}"
     label="${merge_labels[$i]}"
-    printf '  Merging %-34s ... ' "$label"
+    printf '  Merging %-34s %s ... ' "$label" "$url"
     if output=$(gh pr merge "$url" --squash --delete-branch 2>&1); then
         echo "${C_GREEN}done${C_RESET}"
         merged=$((merged + 1))
@@ -292,6 +314,24 @@ for i in "${!merge_urls[@]}"; do
     fi
 done
 
+queued=0
+for i in "${!auto_urls[@]}"; do
+    url="${auto_urls[$i]}"
+    label="${auto_labels[$i]}"
+    printf '  Auto-merge %-34s %s ... ' "$label" "$url"
+    if output=$(gh pr merge "$url" --auto --squash --delete-branch 2>&1); then
+        echo "${C_GREEN}queued${C_RESET}"
+        queued=$((queued + 1))
+    else
+        echo "${C_RED}failed${C_RESET}"
+        echo "$output" | sed 's/^/      /'
+        failed=$((failed + 1))
+    fi
+done
+
 echo
 echo "${C_BOLD}Merged $merged / ${#merge_urls[@]}${C_RESET}, failed $failed"
+if [[ "$AUTO_PENDING" -eq 1 ]]; then
+    echo "${C_BOLD}Auto-merge enabled on $queued / ${#auto_urls[@]}${C_RESET} pull request(s) with pending checks"
+fi
 [[ "$failed" -eq 0 ]] || exit 1
