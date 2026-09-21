@@ -14,6 +14,7 @@ LIMIT=100
 ASSUME_YES=0
 DRY_RUN=0
 APPROVE=1
+UPDATE_BRANCH=1
 TITLE=""
 
 usage() {
@@ -31,10 +32,17 @@ Options:
   -n, --dry-run    only list the pull requests, never merge
       --no-approve never approve: a pull request waiting for a review is
                    merged as-is, which the repository rejects
+      --no-update-branch
+                   never update a pull request whose branch is behind the
+                   base branch: only report it
   -h, --help       show this help
 
-Pull requests with pending, failing or missing checks, draft pull requests and
-pull requests with conflicts are listed but never merged.
+Pull requests with pending, failing or missing checks, draft pull requests,
+pull requests with conflicts and pull requests whose branch is behind the base
+branch are listed but never merged. A repository that requires branches to be
+up to date rejects the merge of a behind pull request, so by default the base
+branch is merged into them; their checks then run again and the merge needs a
+second run of this script.
 
 Approving needs read access, not administrator rights. Pull requests that
 require no review, that are approved already, or that you opened yourself are
@@ -69,6 +77,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-approve)
             APPROVE=0
+            shift
+            ;;
+        -u|--update-branch)
+            UPDATE_BRANCH=1
+            shift
+            ;;
+        --no-update-branch)
+            UPDATE_BRANCH=0
             shift
             ;;
         -h|--help)
@@ -230,6 +246,10 @@ merge_blocker() {
         echo "conflicting"
         return 0
     fi
+    if [[ "$(jq -r '.mergeStateStatus // ""' "$df")" == "BEHIND" ]]; then
+        echo "behind the base branch"
+        return 0
+    fi
     status="$(check_status "$df")"
     if [[ "$status" != "PASSING" ]]; then
         echo "checks are now ${status,,}"
@@ -240,6 +260,7 @@ merge_blocker() {
 
 # ---------------------------------------------------------------- open PRs ---
 merge_urls=()
+behind_urls=()
 skipped=0
 index=0
 
@@ -252,12 +273,18 @@ else
         df="$(detail_file "$url")"
         status="$(check_status "$df")"
         mergeable="$(jq -r '.mergeable // "UNKNOWN"' "$df")"
+        merge_state="$(jq -r '.mergeStateStatus // ""' "$df")"
         [[ "$(jq -r '.isDraft // false' "$df")" == "true" ]] && is_draft="true"
 
+        behind=0
         if [[ "$is_draft" == "true" ]]; then
             label="DRAFT"; color="$C_YELLOW"; icon="*"; ready=0
         elif [[ "$mergeable" == "CONFLICTING" ]]; then
             label="CONFLICT"; color="$C_RED"; icon="!"; ready=0
+        elif [[ "$merge_state" == "BEHIND" ]]; then
+            # The repository requires the branch to be up to date with its
+            # base: merging now is refused by GitHub.
+            label="BEHIND"; color="$C_YELLOW"; icon="<"; ready=0; behind=1
         else
             case "$status" in
                 PASSING)   label="PASSING";   color="$C_GREEN";  icon="+"; ready=1 ;;
@@ -268,7 +295,13 @@ else
         fi
 
         note=""
-        if [[ "$(jq -r '.reviewDecision // ""' "$df")" == "REVIEW_REQUIRED" ]]; then
+        if [[ "$behind" -eq 1 ]]; then
+            if [[ "$UPDATE_BRANCH" -eq 1 ]]; then
+                note=" ${C_DIM}(will be updated)${C_RESET}"
+            else
+                note=" ${C_DIM}(behind, not updated)${C_RESET}"
+            fi
+        elif [[ "$(jq -r '.reviewDecision // ""' "$df")" == "REVIEW_REQUIRED" ]]; then
             if [[ "$APPROVE" -eq 1 && "$ready" -eq 1 ]]; then
                 note=" ${C_DIM}(will be approved)${C_RESET}"
             else
@@ -282,6 +315,7 @@ else
         if [[ "$ready" -eq 1 ]]; then
             merge_urls+=("$url")
         else
+            [[ "$behind" -eq 1 ]] && behind_urls+=("$url")
             skipped=$((skipped + 1))
         fi
     done < <(jq -r '.[] | select(.state == "open")
@@ -304,7 +338,10 @@ fi
 
 echo
 echo "${C_BOLD}Summary:${C_RESET} $total matching pull request(s) - $open_count open, $closed_count closed/merged"
-echo "         ${#merge_urls[@]} ready to merge, $skipped open skipped (draft, conflicting, or checks not passing)"
+echo "         ${#merge_urls[@]} ready to merge, $skipped open skipped (draft, conflicting, behind, or checks not passing)"
+if [[ "${#behind_urls[@]}" -gt 0 && "$UPDATE_BRANCH" -eq 0 ]]; then
+    echo "         ${#behind_urls[@]} behind the base branch - drop --no-update-branch to update them"
+fi
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
     echo
@@ -312,7 +349,12 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     exit 0
 fi
 
-if [[ "${#merge_urls[@]}" -eq 0 ]]; then
+do_update=0
+if [[ "$UPDATE_BRANCH" -eq 1 && "${#behind_urls[@]}" -gt 0 ]]; then
+    do_update=1
+fi
+
+if [[ "${#merge_urls[@]}" -eq 0 && "$do_update" -eq 0 ]]; then
     echo
     echo "No pull request is ready to merge. Nothing to do."
     exit 0
@@ -324,7 +366,14 @@ if [[ "$ASSUME_YES" -eq 0 ]]; then
     if [[ "$APPROVE" -eq 1 ]]; then
         echo "${C_YELLOW}Approve mode: pull requests waiting for a review will be approved as $ME.${C_RESET}"
     fi
-    printf 'Merge the %d pull request(s) marked PASSING with --squash? [yes/N] ' "${#merge_urls[@]}"
+    if [[ "$do_update" -eq 1 ]]; then
+        echo "${C_YELLOW}Update mode: ${#behind_urls[@]} pull request(s) behind the base branch will be updated with a merge commit; their checks then run again, so they are not merged now.${C_RESET}"
+    fi
+    if [[ "${#merge_urls[@]}" -eq 0 ]]; then
+        printf 'Update the %d pull request(s) behind the base branch? [yes/N] ' "${#behind_urls[@]}"
+    else
+        printf 'Merge the %d pull request(s) marked PASSING with --squash? [yes/N] ' "${#merge_urls[@]}"
+    fi
     answer=""
     if { exec 3</dev/tty; } 2>/dev/null; then
         read -r answer <&3 || true
@@ -344,8 +393,25 @@ merged=0
 failed=0
 stale=0
 approved=0
+updated=0
+
+if [[ "$do_update" -eq 1 ]]; then
+    for url in "${behind_urls[@]}"; do
+        printf '  Updating %-59s ... ' "$url"
+        if output=$(gh pr update-branch "$url" 2>&1); then
+            echo "${C_GREEN}done${C_RESET}"
+            updated=$((updated + 1))
+        else
+            echo "${C_RED}failed${C_RESET}"
+            echo "$output" | sed 's/^/      /'
+            failed=$((failed + 1))
+        fi
+    done
+    echo
+fi
+
 recheck="$SCRATCH/recheck.json"
-for url in "${merge_urls[@]}"; do
+for url in "${merge_urls[@]+"${merge_urls[@]}"}"; do
     printf '  Merging %-60s ... ' "$url"
 
     # The listing may be minutes old by now: re-read the status so a pull
@@ -393,6 +459,9 @@ echo
 summary="${C_BOLD}Merged $merged / ${#merge_urls[@]}${C_RESET}, failed $failed, skipped $stale"
 if [[ "$APPROVE" -eq 1 ]]; then
     summary="$summary, approved $approved"
+fi
+if [[ "$do_update" -eq 1 ]]; then
+    summary="$summary, branches updated $updated"
 fi
 echo "$summary"
 [[ "$failed" -eq 0 ]] || exit 1
