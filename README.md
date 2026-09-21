@@ -27,6 +27,7 @@ are ready, after a single confirmation.
 | `-l, --limit N` | maximum number of search results to fetch (default: 100) |
 | `-y, --yes` | do not ask for confirmation before merging |
 | `-n, --dry-run` | only list the pull requests, never merge |
+| `--no-approve` | never approve: pull requests waiting for a review are merged as-is, which fails |
 | `-h, --help` | show the help text |
 
 The title must match the pull request title **exactly** (case-insensitive);
@@ -69,7 +70,7 @@ Merge the 2 pull request(s) marked PASSING with --squash? [yes/N] yes
   Merging https://github.com/NethServer/ns8-lamp/pull/138      ... done
   Merging https://github.com/NethServer/ns8-rustfs/pull/82     ... done
 
-Merged 2 / 2, failed 0
+Merged 2 / 2, failed 0, skipped 0
 ```
 
 ## What gets merged
@@ -77,6 +78,10 @@ Merged 2 / 2, failed 0
 Only open pull requests that are **not** drafts, have **no** conflicts, and
 whose checks are all passing. They are merged with
 `gh pr merge --squash --delete-branch`.
+
+The status of every pull request is read a second time immediately before it
+is merged, so one that turned red, was closed or gained a conflict while the
+list was on screen is skipped instead of merged.
 
 Everything else is listed for information but never merged:
 
@@ -89,7 +94,31 @@ Everything else is listed for information but never merged:
 | `! CONFLICT` | the branch conflicts with its base |
 | `* DRAFT` | the pull request is a draft |
 
-Auto-merge (`--auto`) and administrator overrides (`--admin`) are never used:
-if a pull request is not mergeable right now, the script leaves it alone.
+Auto-merge (`--auto`) is never used: if a pull request is not mergeable right
+now, the script leaves it alone.
 
-The exit code is `1` if any merge failed, `0` otherwise.
+## Pull requests waiting for a review
+
+Repositories that require an approving review reject the merge with
+`Pull request is not mergeable`. By default the script runs
+`gh pr review --approve` on such a pull request just before merging it, which
+only needs read access to the repository - no administrator rights and no
+change to the branch protection rules. Pass `--no-approve` to turn this off.
+
+A pull request is approved only when all of the following hold:
+
+- its checks are green at that very moment (the same re-check as above);
+- GitHub reports `reviewDecision: REVIEW_REQUIRED`, so pull requests that need
+  no review, or that are approved already, are merged untouched;
+- it was not opened by you - GitHub refuses an approval on your own pull
+  request.
+
+The listing marks these pull requests with `(will be approved)`, or
+`(review required)` under `--no-approve`.
+
+Approving cannot help when the branch protection requires two approvals,
+requires a CODEOWNERS review you cannot give, or when someone requested
+changes: those merges are reported as failed.
+
+The exit code is `1` if any merge failed, `0` otherwise. Pull requests skipped
+by the final status check do not affect the exit code.
